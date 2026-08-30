@@ -8,7 +8,7 @@
   "title": "An authored Tumblr title",
   "body_text": "A paragraph, an image, and a short list.",
   "body_html": "<p>A paragraph with <em>inline emphasis</em>.</p><figure><img src=\"https://cdn.example/tumblr-image.jpg\" alt=\"A folded sheet of red paper\"></figure><ul><li>First observation</li><li>Second observation</li></ul>",
-  "tags": ["socialposts", "code and canvas", "typography"],
+  "tags": ["socialposts", "typography"],
   "trigger_tag": "socialposts",
   "language": "en"
 }
