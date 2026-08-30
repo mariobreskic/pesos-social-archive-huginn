@@ -1,0 +1,220 @@
+{
+  "schema_version": 1,
+  "name": "pesos_social_to_wordpress_template",
+  "description": "Platform-neutral PESOS archive core: validate one normalized webhook Event, sideload public HTTPS media, create source taxonomy, build Gutenberg, and save a WordPress draft. Render placeholders before importing.",
+  "source_url": false,
+  "guid": "78612620-84fb-55ed-bd3e-0df5975034e3",
+  "tag_fg_color": "#ffffff",
+  "tag_bg_color": "#3858e9",
+  "icon": "archive",
+  "exported_at": "2026-08-30T00:00:00Z",
+  "agents": [
+    {
+      "type": "Agents::WebhookAgent",
+      "name": "01 — Receive normalized PESOS Event [SET SECRET]",
+      "disabled": false,
+      "guid": "24ad80ae-5f95-5048-96ec-85d878f1ffe3",
+      "options": {
+        "expected_receive_period_in_days": "7",
+        "secret": "__WEBHOOK_SECRET__",
+        "payload_path": ".",
+        "event_headers": "",
+        "event_headers_key": "headers",
+        "verbs": "post",
+        "response": "Event accepted"
+      },
+      "keep_events_for": 604800
+    },
+    {
+      "type": "Agents::JavaScriptAgent",
+      "name": "02 — Normalize, validate, and fan out",
+      "disabled": false,
+      "guid": "1adf12a9-2525-591d-8be2-d3e75f1aaa64",
+      "options": {
+        "language": "JavaScript",
+        "expected_receive_period_in_days": "7",
+        "expected_update_period_in_days": "2",
+        "code": "/*\n * Turn one source adapter Event into a bounded set of archive jobs.\n * ES5 is deliberate: Huginn installations often run an older MiniRacer.\n */\n\nvar PX_ROUTING_TAG = \"__ROUTING_TAG__\";\nvar PX_POST_STATUS = \"__POST_STATUS__\";\nvar PX_MAX_MEDIA = 10;\n\nfunction pxString(value) {\n  return value === null || typeof value === \"undefined\" ? \"\" : String(value);\n}\n\nfunction pxTrim(value) {\n  return pxString(value).replace(/^\\s+|\\s+$/g, \"\");\n}\n\nfunction pxCharacters(value) {\n  var text = pxString(value);\n  var characters = [];\n  var i;\n  for (i = 0; i < text.length; i += 1) {\n    var first = text.charCodeAt(i);\n    if (first >= 0xD800 && first <= 0xDBFF && i + 1 < text.length) {\n      var second = text.charCodeAt(i + 1);\n      if (second >= 0xDC00 && second <= 0xDFFF) {\n        characters.push(text.substring(i, i + 2));\n        i += 1;\n        continue;\n      }\n    }\n    characters.push(text.charAt(i));\n  }\n  return characters;\n}\n\nfunction pxTruncate(value, limit) {\n  var text = pxTrim(value);\n  var characters = pxCharacters(text);\n  if (characters.length <= limit) { return text; }\n  var slice = characters.slice(0, limit + 1).join(\"\")\n    .replace(/\\s+\\S*$/, \"\")\n    .replace(/[\\s,;:\\u2013\\u2014-]+$/, \"\");\n  if (!slice || pxCharacters(slice).length < 24) {\n    slice = characters.slice(0, limit).join(\"\").replace(/[\\s,;:\\u2013\\u2014-]+$/, \"\");\n  }\n  return slice + \"\\u2026\";\n}\n\nfunction pxParseJson(value, fallback) {\n  if (typeof value !== \"string\") { return value; }\n  try { return JSON.parse(value); } catch (ignoreJson) { return fallback; }\n}\n\nfunction pxFNV1a(value) {\n  var hash = 2166136261;\n  var text = pxString(value);\n  var i;\n  for (i = 0; i < text.length; i += 1) {\n    hash ^= text.charCodeAt(i);\n    hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);\n  }\n  return (hash >>> 0).toString(16);\n}\n\nfunction pxSlug(value) {\n  var slug = pxTrim(value).toLowerCase().replace(/&/g, \"and\");\n  if (typeof slug.normalize === \"function\") {\n    try { slug = slug.normalize(\"NFKD\"); } catch (ignoreNormalize) {}\n  }\n  return slug\n    .replace(/[\\u0300-\\u036f]/g, \"\")\n    .replace(/[^a-z0-9]+/g, \"-\")\n    .replace(/^-+|-+$/g, \"\");\n}\n\nfunction pxTag(value) {\n  var tag = pxTrim(value).replace(/^#+/, \"\");\n  if (typeof tag.normalize === \"function\") {\n    try { tag = tag.normalize(\"NFKC\"); } catch (ignoreNormalize) {}\n  }\n  tag = tag.toLowerCase().replace(/&/g, \"and\");\n  try {\n    return tag.replace(new RegExp(\"[^\\\\p{L}\\\\p{N}]+\", \"gu\"), \"\");\n  } catch (ignoreUnicodeProperties) {\n    return tag.replace(/[^0-9A-Za-z\\u00C0-\\u00D6\\u00D8-\\u00F6\\u00F8-\\u024F]+/g, \"\");\n  }\n}\n\nfunction pxTitleCaseSlug(value) {\n  var parts = pxString(value).split(\"-\");\n  var result = [];\n  var i;\n  for (i = 0; i < parts.length; i += 1) {\n    if (parts[i]) { result.push(parts[i].charAt(0).toUpperCase() + parts[i].substring(1)); }\n  }\n  return result.join(\" \");\n}\n\nfunction pxBlockedHost(hostname) {\n  var host = pxString(hostname).toLowerCase().replace(/\\.$/, \"\");\n  var ipv4;\n  var first;\n  var second;\n\n  if (!host || host === \"localhost\" || /\\.(?:localhost|local|internal|home\\.arpa)$/.test(host)) {\n    return true;\n  }\n  if (/^\\[/.test(host)) {\n    return /^\\[(?:::1|fc|fd|fe[89ab])/i.test(host);\n  }\n  ipv4 = /^(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})$/.exec(host);\n  if (!ipv4) { return false; }\n  first = parseInt(ipv4[1], 10);\n  second = parseInt(ipv4[2], 10);\n  return first === 0 || first === 10 || first === 127 ||\n    (first === 169 && second === 254) ||\n    (first === 172 && second >= 16 && second <= 31) ||\n    (first === 192 && second === 168) || first >= 224;\n}\n\nfunction pxSafeHttps(value) {\n  var url = pxTrim(value);\n  var match = /^https:\\/\\/([^\\/?#]+)(?:[\\/?#]|$)/i.exec(url);\n  var authority;\n  var host;\n  if (!match) { return \"\"; }\n  authority = match[1];\n  if (authority.indexOf(\"@\") !== -1) { return \"\"; }\n  host = authority.replace(/:\\d+$/, \"\");\n  return pxBlockedHost(host) ? \"\" : url;\n}\n\nfunction pxSafeLink(value) {\n  var link = pxSafeHttps(value);\n  if (link) { return link; }\n  return /^mailto:[^\\s<>]+$/i.test(pxTrim(value)) ? pxTrim(value) : \"\";\n}\n\nfunction pxEscapeHtml(value) {\n  return pxString(value)\n    .replace(/&/g, \"&amp;\")\n    .replace(/</g, \"&lt;\")\n    .replace(/>/g, \"&gt;\")\n    .replace(/\"/g, \"&quot;\")\n    .replace(/'/g, \"&#039;\");\n}\n\nfunction pxDecodeAttribute(value) {\n  return pxString(value)\n    .replace(/&amp;/gi, \"&\")\n    .replace(/&quot;/gi, \"\\\"\")\n    .replace(/&#039;|&#39;/gi, \"'\")\n    .replace(/&lt;/gi, \"<\")\n    .replace(/&gt;/gi, \">\");\n}\n\nfunction pxAttribute(tag, name) {\n  var expression = new RegExp(\"\\\\b\" + name + \"\\\\s*=\\\\s*([\\\\\\\"'])((?:\\\\\\\\.|(?!\\\\1)[\\\\s\\\\S])*)\\\\1\", \"i\");\n  var match = expression.exec(tag);\n  return match ? pxDecodeAttribute(match[2]) : \"\";\n}\n\nfunction pxRemoveRoutingTag(value) {\n  return pxTrim(pxString(value)\n    .replace(new RegExp(\"(^|\\\\s)#\" + PX_ROUTING_TAG + \"\\\\b\", \"gi\"), \"$1\")\n    .replace(/[ \\t]+\\n/g, \"\\n\")\n    .replace(/[ \\t]{2,}/g, \" \")\n    .replace(/\\n{3,}/g, \"\\n\\n\"));\n}\n\nfunction pxSanitizeInline(html) {\n  var cleaned = pxString(html)\n    .replace(/<script\\b[^>]*>[\\s\\S]*?<\\/script>/gi, \"\")\n    .replace(/<style\\b[^>]*>[\\s\\S]*?<\\/style>/gi, \"\")\n    .replace(/<!--([\\s\\S]*?)-->/g, \"\");\n\n  return cleaned.replace(/<\\/?[^>]+>/g, function(tag) {\n    var closing = /^<\\//.test(tag);\n    var nameMatch = /^<\\/?\\s*([a-z0-9]+)/i.exec(tag);\n    var name = nameMatch ? nameMatch[1].toLowerCase() : \"\";\n    var href;\n\n    if (name === \"b\") { name = \"strong\"; }\n    if (name === \"i\") { name = \"em\"; }\n    if (name === \"strike\") { name = \"s\"; }\n    if (name === \"br\") { return closing ? \"\" : \"<br>\"; }\n    if (/^(strong|em|code|s|del|u|sub|sup)$/.test(name)) {\n      return closing ? \"</\" + name + \">\" : \"<\" + name + \">\";\n    }\n    if (name === \"a\") {\n      if (closing) { return \"</a>\"; }\n      href = pxSafeLink(pxAttribute(tag, \"href\"));\n      return href ? \"<a href=\\\"\" + pxEscapeHtml(href) + \"\\\">\" : \"\";\n    }\n    return \"\";\n  });\n}\n\nfunction pxPlainText(html) {\n  return pxTrim(pxSanitizeInline(html)\n    .replace(/<br\\s*\\/?>/gi, \"\\n\")\n    .replace(/<[^>]*>/g, \"\"));\n}\n\nfunction pxLargestImageUrl(imgTag) {\n  var srcset = pxAttribute(imgTag, \"srcset\");\n  var fallback = pxSafeHttps(pxAttribute(imgTag, \"src\"));\n  var bestUrl = fallback;\n  var bestScore = 0;\n  var candidates;\n  var i;\n\n  if (!srcset) { return fallback; }\n  candidates = srcset.split(\",\");\n  for (i = 0; i < candidates.length; i += 1) {\n    var candidate = pxTrim(candidates[i]);\n    var match = /^(\\S+)\\s+(\\d+(?:\\.\\d+)?)(w|x)$/i.exec(candidate);\n    if (match) {\n      var url = pxSafeHttps(pxDecodeAttribute(match[1]));\n      var score = parseFloat(match[2]) * (match[3].toLowerCase() === \"x\" ? 10000 : 1);\n      if (url && score > bestScore) {\n        bestUrl = url;\n        bestScore = score;\n      }\n    }\n  }\n  return bestUrl;\n}\n\nfunction pxPushMedia(media, seen, spec) {\n  var url = pxSafeHttps(spec.url);\n  var kind = pxTrim(spec.kind || spec.type || \"image\").toLowerCase();\n  var index;\n  if (!url || seen[url]) { return -1; }\n  if (kind === \"photo\") { kind = \"image\"; }\n  if (kind === \"animated_gif\") { kind = \"gifv\"; }\n  if (!/^(image|video|gifv|audio|file)$/.test(kind)) { kind = \"file\"; }\n  index = media.length;\n  seen[url] = true;\n  media.push({\n    index: index,\n    url: url,\n    kind: kind,\n    alt: pxTruncate(spec.alt || spec.alt_text || \"\", 500),\n    title: pxTruncate(spec.title || \"\", 160)\n  });\n  return index;\n}\n\nfunction pxAddImages(fragment, tokens, media, seen) {\n  var imageExpression = /<img\\b[^>]*>/gi;\n  var match;\n  while ((match = imageExpression.exec(fragment))) {\n    var index = pxPushMedia(media, seen, {\n      url: pxLargestImageUrl(match[0]),\n      kind: \"image\",\n      alt: pxAttribute(match[0], \"alt\")\n    });\n    if (index >= 0) { tokens.push({ type: \"media\", index: index }); }\n  }\n}\n\nfunction pxAddParagraph(inner, tokens, media, seen) {\n  var imageExpression = /<img\\b[^>]*>/gi;\n  var cursor = 0;\n  var match;\n  var found = false;\n  var before;\n  var after;\n  var clean;\n\n  while ((match = imageExpression.exec(inner))) {\n    found = true;\n    before = pxRemoveRoutingTag(pxSanitizeInline(inner.substring(cursor, match.index)));\n    if (pxPlainText(before)) { tokens.push({ type: \"paragraph\", html: before }); }\n    pxAddImages(match[0], tokens, media, seen);\n    cursor = match.index + match[0].length;\n  }\n  if (found) {\n    after = pxRemoveRoutingTag(pxSanitizeInline(inner.substring(cursor)));\n    if (pxPlainText(after)) { tokens.push({ type: \"paragraph\", html: after }); }\n  } else {\n    clean = pxRemoveRoutingTag(pxSanitizeInline(inner));\n    if (pxPlainText(clean)) { tokens.push({ type: \"paragraph\", html: clean }); }\n  }\n}\n\nfunction pxParseHtml(html) {\n  var input = pxString(html)\n    .replace(/<script\\b[^>]*>[\\s\\S]*?<\\/script>/gi, \"\")\n    .replace(/<style\\b[^>]*>[\\s\\S]*?<\\/style>/gi, \"\");\n  var tokens = [];\n  var media = [];\n  var seen = {};\n  var blockExpression = /<p\\b[^>]*>[\\s\\S]*?<\\/p>|<h[1-6]\\b[^>]*>[\\s\\S]*?<\\/h[1-6]>|<blockquote\\b[^>]*>[\\s\\S]*?<\\/blockquote>|<pre\\b[^>]*>[\\s\\S]*?<\\/pre>|<(?:ul|ol)\\b[^>]*>[\\s\\S]*?<\\/(?:ul|ol)>|<div\\b[^>]*>[\\s\\S]*?<\\/div>|<figure\\b[^>]*>[\\s\\S]*?<\\/figure>/gi;\n  var cursor = 0;\n  var match;\n\n  function addGap(gap) {\n    var clean = pxRemoveRoutingTag(pxSanitizeInline(gap));\n    if (pxPlainText(clean)) { tokens.push({ type: \"paragraph\", html: clean }); }\n  }\n\n  while ((match = blockExpression.exec(input))) {\n    addGap(input.substring(cursor, match.index));\n    var block = match[0];\n    var open = /^<\\s*([a-z0-9]+)/i.exec(block);\n    var tagName = open ? open[1].toLowerCase() : \"\";\n    var body;\n\n    if (/<img\\b/i.test(block) && (tagName === \"div\" || tagName === \"figure\")) {\n      pxAddImages(block, tokens, media, seen);\n    } else if (tagName === \"p\") {\n      pxAddParagraph(block.replace(/^<p\\b[^>]*>/i, \"\").replace(/<\\/p>$/i, \"\"), tokens, media, seen);\n    } else if (/^h[1-6]$/.test(tagName)) {\n      body = pxRemoveRoutingTag(pxSanitizeInline(block.replace(/^<h[1-6]\\b[^>]*>/i, \"\").replace(/<\\/h[1-6]>$/i, \"\")));\n      if (pxPlainText(body)) { tokens.push({ type: \"heading\", level: parseInt(tagName.substring(1), 10), html: body }); }\n    } else if (tagName === \"blockquote\") {\n      body = pxRemoveRoutingTag(pxSanitizeInline(block.replace(/^<blockquote\\b[^>]*>/i, \"\").replace(/<\\/blockquote>$/i, \"\")));\n      if (pxPlainText(body)) { tokens.push({ type: \"quote\", html: body }); }\n    } else if (tagName === \"pre\") {\n      body = pxRemoveRoutingTag(pxTrim(block.replace(/^<pre\\b[^>]*>/i, \"\").replace(/<\\/pre>$/i, \"\")));\n      if (body) { tokens.push({ type: \"preformatted\", html: pxEscapeHtml(body) }); }\n    } else if (tagName === \"ul\" || tagName === \"ol\") {\n      var items = [];\n      var itemExpression = /<li\\b[^>]*>([\\s\\S]*?)<\\/li>/gi;\n      var itemMatch;\n      while ((itemMatch = itemExpression.exec(block))) {\n        body = pxRemoveRoutingTag(pxSanitizeInline(itemMatch[1]));\n        if (pxPlainText(body)) { items.push(body); }\n      }\n      if (items.length) { tokens.push({ type: \"list\", ordered: tagName === \"ol\", items: items }); }\n    } else {\n      addGap(block);\n    }\n    cursor = match.index + block.length;\n  }\n  addGap(input.substring(cursor));\n  return { tokens: tokens, media: media, seen: seen };\n}\n\nfunction pxLinkify(value) {\n  var text = pxString(value);\n  var result = \"\";\n  var expression = /https:\\/\\/[^\\s<>\"']+/gi;\n  var cursor = 0;\n  var match;\n  while ((match = expression.exec(text))) {\n    result += pxEscapeHtml(text.substring(cursor, match.index));\n    var full = match[0];\n    var url = full;\n    var trailing = \"\";\n    while (/[.,!?;:]$/.test(url)) {\n      trailing = url.substring(url.length - 1) + trailing;\n      url = url.substring(0, url.length - 1);\n    }\n    var safe = pxSafeHttps(url);\n    result += safe ? \"<a href=\\\"\" + pxEscapeHtml(safe) + \"\\\">\" + pxEscapeHtml(url) + \"</a>\" : pxEscapeHtml(full);\n    result += pxEscapeHtml(trailing);\n    cursor = match.index + full.length;\n  }\n  result += pxEscapeHtml(text.substring(cursor));\n  return result.replace(/\\n/g, \"<br>\");\n}\n\nfunction pxTextTokens(value) {\n  var paragraphs = pxRemoveRoutingTag(value).replace(/\\r\\n?/g, \"\\n\").split(/\\n{2,}/);\n  var tokens = [];\n  var i;\n  for (i = 0; i < paragraphs.length; i += 1) {\n    var paragraph = pxTrim(paragraphs[i]);\n    if (paragraph) { tokens.push({ type: \"paragraph\", html: pxLinkify(paragraph) }); }\n  }\n  return tokens;\n}\n\nfunction pxValues(value) {\n  var parsed = pxParseJson(value, value);\n  if (Object.prototype.toString.call(parsed) === \"[object Array]\") { return parsed; }\n  if (parsed === null || typeof parsed === \"undefined\" || parsed === \"\") { return []; }\n  return [parsed];\n}\n\nfunction pxCollectTags(value, result, seen) {\n  var values = pxValues(value);\n  var i;\n  var parts;\n  var j;\n  for (i = 0; i < values.length; i += 1) {\n    parts = typeof values[i] === \"string\" ? values[i].split(\",\") : [values[i]];\n    for (j = 0; j < parts.length; j += 1) {\n      var tag = pxTag(parts[j]);\n      if (tag && tag !== pxTag(PX_ROUTING_TAG) && !seen[tag]) {\n        seen[tag] = true;\n        result.push(tag);\n      }\n    }\n  }\n}\n\nfunction pxCollectHashtags(value, result, seen) {\n  var text = pxString(value);\n  var expression;\n  var match;\n  try {\n    expression = new RegExp(\"#([\\\\p{L}\\\\p{N}_]+)\", \"gu\");\n  } catch (ignoreUnicodeProperties) {\n    expression = /#([0-9A-Za-z_\\u00C0-\\u00D6\\u00D8-\\u00F6\\u00F8-\\u024F]+)/g;\n  }\n  while ((match = expression.exec(text))) { pxCollectTags(match[1], result, seen); }\n}\n\nfunction pxDate(value) {\n  var text = pxTrim(value);\n  var result = { date: \"\", date_gmt: \"\", label: \"\" };\n  var iso = /^(\\d{4}-\\d{2}-\\d{2})T(\\d{2}:\\d{2})(?::(\\d{2}))?(Z|[+-]\\d{2}:?\\d{2})?/.exec(text);\n  var months;\n  var human;\n  var hour;\n\n  if (iso) {\n    result.label = iso[1];\n    result.date = iso[1] + \"T\" + iso[2] + \":\" + (iso[3] || \"00\");\n    if (iso[4]) {\n      var parsed = new Date(text);\n      if (!isNaN(parsed.getTime())) { result.date_gmt = parsed.toISOString().substring(0, 19); }\n    }\n    return result;\n  }\n\n  months = {\n    january: 1, february: 2, march: 3, april: 4, may: 5, june: 6,\n    july: 7, august: 8, september: 9, october: 10, november: 11, december: 12\n  };\n  human = /^([A-Za-z]+)\\s+(\\d{1,2}),\\s+(\\d{4})\\s+at\\s+(\\d{1,2}):(\\d{2})(?::(\\d{2}))?\\s*(AM|PM)$/i.exec(text);\n  if (human && months[human[1].toLowerCase()]) {\n    function two(number) { return number < 10 ? \"0\" + number : String(number); }\n    hour = parseInt(human[4], 10);\n    if (human[7].toUpperCase() === \"PM\" && hour !== 12) { hour += 12; }\n    if (human[7].toUpperCase() === \"AM\" && hour === 12) { hour = 0; }\n    result.label = human[3] + \"-\" + two(months[human[1].toLowerCase()]) + \"-\" + two(parseInt(human[2], 10));\n    result.date = result.label + \"T\" + two(hour) + \":\" + human[5] + \":\" + (human[6] || \"00\");\n  }\n  return result;\n}\n\nfunction pxCleanTitleText(value) {\n  return pxTrim(pxRemoveRoutingTag(pxString(value))\n    .replace(/https:\\/\\/\\S+/gi, \"\")\n    .replace(/(?:^|\\s)#[^\\s#]+/g, \" \")\n    .replace(/\\s+/g, \" \"));\n}\n\nfunction pxTitle(supplied, text, sourceName, dateLabel) {\n  var explicit = pxTrim(supplied).replace(/\\s+/g, \" \");\n  var clean;\n  var match;\n  if (explicit && !/^\\d{4}-\\d{2}-\\d{2}(?:[ T].*)?$/.test(explicit)) {\n    return pxTruncate(explicit, 96);\n  }\n  clean = pxCleanTitleText(text);\n  if (clean) {\n    match = /^(.+?[.!?\\u2026](?:[\\u201D\\u2019\"\\)\\]]+)?)(?:\\s|$)/.exec(clean);\n    if (match && pxCharacters(match[1]).length >= 12) { clean = match[1]; }\n    return pxTruncate(clean, 96);\n  }\n  return pxTruncate(sourceName + \" post from \" + dateLabel, 96);\n}\n\nfunction pxIdentifier(payload, sourceUrl) {\n  var supplied = pxTrim(payload.source_id || payload.id);\n  var match;\n  if (supplied) { return pxTruncate(supplied.replace(/\\s+/g, \"-\"), 160); }\n  match = /\\/([^\\/?#]+)\\/?(?:[?#].*)?$/.exec(sourceUrl);\n  return match && match[1] ? pxTruncate(match[1], 160) : \"url-\" + pxFNV1a(sourceUrl);\n}\n\nfunction pxExplicitMedia(payload, media, seen, title) {\n  var specs = pxValues(payload.media || payload.attachments);\n  var singular = payload.media_url || payload.image_url || payload.photo_url || payload.source_media_url;\n  var tokens = [];\n  var i;\n  if (singular) {\n    specs.push({\n      url: singular,\n      kind: payload.media_kind || payload.kind || \"image\",\n      alt: payload.media_alt || payload.alt || \"\",\n      title: payload.media_title || title\n    });\n  }\n  for (i = 0; i < specs.length; i += 1) {\n    var spec = typeof specs[i] === \"string\" ? { url: specs[i] } : (specs[i] || {});\n    if (!spec.title) { spec.title = title; }\n    var index = pxPushMedia(media, seen, spec);\n    if (index >= 0) { tokens.push({ type: \"media\", index: index }); }\n  }\n  return tokens;\n}\n\nfunction pxFail(agent, reason, details) {\n  var event = details || {};\n  event.event_type = \"job_failed\";\n  event.stage = \"normalize\";\n  event.reason = reason;\n  agent.error(\"PESOS ingress rejected: \" + reason);\n  agent.createEvent(event);\n}\n\nAgent.receive = function() {\n  var events = this.incomingEvents();\n  var recent = this.memory(\"recent_jobs\") || {};\n  var now = new Date().getTime();\n  var cutoff = now - (14 * 24 * 60 * 60 * 1000);\n  var oldKey;\n  var e;\n\n  for (oldKey in recent) {\n    if (recent.hasOwnProperty(oldKey) && recent[oldKey] < cutoff) { delete recent[oldKey]; }\n  }\n\n  for (e = 0; e < events.length; e += 1) {\n    var payload = pxParseJson(events[e].payload || {}, {});\n    var source = pxSlug(payload.source);\n    var sourceName = pxTruncate(payload.source_name || pxTitleCaseSlug(source), 64);\n    var sourceUrl = pxSafeHttps(payload.source_url || payload.url);\n    var route = pxTag(payload.trigger_tag);\n    var sourceId;\n    var jobId;\n    var dateInfo;\n    var rawText;\n    var bodyHtml;\n    var parsed;\n    var explicitTokens;\n    var tokens;\n    var media;\n    var tags = [];\n    var seenTags = {};\n    var title;\n    var idSlug;\n    var slug;\n    var category;\n    var language;\n    var job;\n    var i;\n\n    if (!source || !sourceName) { pxFail(this, \"missing_source\", {}); continue; }\n    if (route !== pxTag(PX_ROUTING_TAG)) { pxFail(this, \"routing_tag_mismatch\", { source: source }); continue; }\n    if (!sourceUrl) { pxFail(this, \"source_url_must_be_public_https\", { source: source }); continue; }\n\n    sourceId = pxIdentifier(payload, sourceUrl);\n    jobId = source + \":\" + sourceId;\n    if (recent[jobId]) { continue; }\n\n    dateInfo = pxDate(payload.created_at || payload.published_at);\n    if (!dateInfo.date) { pxFail(this, \"unparseable_created_at\", { source: source, source_id: sourceId }); continue; }\n\n    rawText = pxString(payload.text || payload.body_text || payload.caption || payload.content_text);\n    bodyHtml = pxString(payload.body_html || payload.html);\n    title = pxTitle(payload.title, rawText || pxPlainText(bodyHtml), sourceName, dateInfo.label);\n    parsed = bodyHtml ? pxParseHtml(bodyHtml) : { tokens: pxTextTokens(rawText), media: [], seen: {} };\n    media = parsed.media;\n    explicitTokens = pxExplicitMedia(payload, media, parsed.seen, title);\n    tokens = pxTrim(payload.media_position).toLowerCase() === \"before\" ?\n      explicitTokens.concat(parsed.tokens) : parsed.tokens.concat(explicitTokens);\n\n    if (media.length > PX_MAX_MEDIA) {\n      pxFail(this, \"too_many_media_items\", { source: source, source_id: sourceId, media_count: media.length });\n      continue;\n    }\n\n    pxCollectTags(payload.tags, tags, seenTags);\n    pxCollectHashtags(rawText || pxPlainText(bodyHtml), tags, seenTags);\n    idSlug = pxSlug(sourceId).substring(0, 24) || pxFNV1a(sourceId);\n    slug = dateInfo.date.substring(0, 16).replace(\"T\", \"-\").replace(\":\", \"\") + \"-\" + source + \"-\" + idSlug;\n    category = pxTruncate(payload.category || sourceName, 64);\n    language = pxTrim(payload.language || payload.lang);\n    if (language && !/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(language)) { language = \"\"; }\n\n    job = {\n      job_id: jobId,\n      source: source,\n      source_id: sourceId,\n      source_name: sourceName,\n      source_url: sourceUrl,\n      author: pxTruncate(payload.author || payload.user_name || payload.username, 160),\n      language: language,\n      title: title,\n      excerpt: pxTruncate(payload.excerpt || pxCleanTitleText(rawText || pxPlainText(bodyHtml)), 280),\n      slug: slug,\n      post_status: PX_POST_STATUS,\n      wp_date: dateInfo.date,\n      wp_date_gmt: dateInfo.date_gmt,\n      tokens: tokens,\n      media_count: media.length,\n      term_count: tags.length + 1,\n      received_at_ms: now\n    };\n\n    recent[jobId] = now;\n    this.createEvent({ event_type: \"job_start\", job_id: jobId, job_data: job });\n\n    for (i = 0; i < media.length; i += 1) {\n      this.createEvent({\n        event_type: \"media_request\",\n        job_id: jobId,\n        media_index: i,\n        media_url: media[i].url,\n        media_kind: media[i].kind,\n        media_alt: media[i].alt,\n        media_title: media[i].title || title,\n        job_data: job\n      });\n    }\n\n    this.createEvent({\n      event_type: \"term_request\",\n      job_id: jobId,\n      term_role: \"category\",\n      term_index: 0,\n      term_endpoint: \"categories\",\n      term_name: category,\n      job_data: job\n    });\n\n    for (i = 0; i < tags.length; i += 1) {\n      this.createEvent({\n        event_type: \"term_request\",\n        job_id: jobId,\n        term_role: \"tag\",\n        term_index: i,\n        term_endpoint: \"tags\",\n        term_name: tags[i],\n        job_data: job\n      });\n    }\n  }\n  this.memory(\"recent_jobs\", recent);\n};\n"
+      },
+      "keep_events_for": 604800,
+      "schedule": "never",
+      "propagate_immediately": true
+    },
+    {
+      "type": "Agents::TriggerAgent",
+      "name": "03 — Route media requests",
+      "disabled": false,
+      "guid": "b920879e-9a15-5f2c-b1e9-9f178db4d4af",
+      "options": {
+        "expected_receive_period_in_days": "7",
+        "keep_event": "true",
+        "rules": [
+          {
+            "type": "field==value",
+            "value": "media_request",
+            "path": "event_type"
+          }
+        ]
+      },
+      "keep_events_for": 604800,
+      "schedule": "never",
+      "propagate_immediately": true
+    },
+    {
+      "type": "Agents::PostAgent",
+      "name": "04 — Sideload media into WordPress [SET CREDENTIALS]",
+      "disabled": false,
+      "guid": "8c881b20-e387-59cc-b3e3-3d67515bbe08",
+      "options": {
+        "post_url": "__WORDPRESS_BASE_URL__/wp-json/wp/v2/media",
+        "expected_receive_period_in_days": "7",
+        "content_type": "json",
+        "method": "post",
+        "headers": {},
+        "payload": {
+          "url": "{{media_url}}",
+          "alt_text": "{{media_alt}}",
+          "title": "{{media_title}}",
+          "generate_sub_sizes": true
+        },
+        "basic_auth": [
+          "{% credential __WP_USERNAME_CREDENTIAL__ %}",
+          "{% credential __WP_APPLICATION_PASSWORD_CREDENTIAL__ %}"
+        ],
+        "emit_events": "true",
+        "parse_body": "true",
+        "no_merge": "true",
+        "output_mode": "merge"
+      },
+      "keep_events_for": 604800,
+      "schedule": "never",
+      "propagate_immediately": true
+    },
+    {
+      "type": "Agents::TriggerAgent",
+      "name": "05 — Route taxonomy requests",
+      "disabled": false,
+      "guid": "64ad8a34-c771-5b0a-8c07-6a151185f1e6",
+      "options": {
+        "expected_receive_period_in_days": "7",
+        "keep_event": "true",
+        "rules": [
+          {
+            "type": "field==value",
+            "value": "term_request",
+            "path": "event_type"
+          }
+        ]
+      },
+      "keep_events_for": 604800,
+      "schedule": "never",
+      "propagate_immediately": true
+    },
+    {
+      "type": "Agents::PostAgent",
+      "name": "06 — Create or find WordPress term [SET CREDENTIALS]",
+      "disabled": false,
+      "guid": "49f4c891-c727-5118-a92d-69105260e77a",
+      "options": {
+        "post_url": "__WORDPRESS_BASE_URL__/wp-json/wp/v2/{{term_endpoint}}",
+        "expected_receive_period_in_days": "7",
+        "content_type": "json",
+        "method": "post",
+        "headers": {},
+        "payload": {
+          "name": "{{term_name}}"
+        },
+        "basic_auth": [
+          "{% credential __WP_USERNAME_CREDENTIAL__ %}",
+          "{% credential __WP_APPLICATION_PASSWORD_CREDENTIAL__ %}"
+        ],
+        "emit_events": "true",
+        "parse_body": "true",
+        "no_merge": "true",
+        "output_mode": "merge"
+      },
+      "keep_events_for": 604800,
+      "schedule": "never",
+      "propagate_immediately": true
+    },
+    {
+      "type": "Agents::JavaScriptAgent",
+      "name": "07 — Join responses and build Gutenberg",
+      "disabled": false,
+      "guid": "a71015e3-5967-587a-8c59-cffa49b0e366",
+      "options": {
+        "language": "JavaScript",
+        "expected_receive_period_in_days": "7",
+        "expected_update_period_in_days": "2",
+        "code": "/* Join asynchronous WordPress responses and emit exactly one post payload. */\n\nfunction pcString(value) {\n  return value === null || typeof value === \"undefined\" ? \"\" : String(value);\n}\n\nfunction pcEscapeHtml(value) {\n  return pcString(value)\n    .replace(/&/g, \"&amp;\")\n    .replace(/</g, \"&lt;\")\n    .replace(/>/g, \"&gt;\")\n    .replace(/\"/g, \"&quot;\")\n    .replace(/'/g, \"&#039;\");\n}\n\nfunction pcBody(value) {\n  if (typeof value === \"string\") {\n    try { return JSON.parse(value); } catch (ignoreJson) { return {}; }\n  }\n  return value || {};\n}\n\nfunction pcCount(object) {\n  var count = 0;\n  var key;\n  for (key in object) {\n    if (object.hasOwnProperty(key)) { count += 1; }\n  }\n  return count;\n}\n\nfunction pcLanguageAttribute(job) {\n  return job.language ? \" lang=\\\"\" + pcEscapeHtml(job.language) + \"\\\"\" : \"\";\n}\n\nfunction pcMediaBlock(item) {\n  if (!item) { return \"\"; }\n  if (item.kind === \"video\" || item.kind === \"gifv\") {\n    var attributes = item.kind === \"gifv\" ? \",\\\"autoplay\\\":true,\\\"loop\\\":true,\\\"muted\\\":true\" : \"\";\n    var flags = item.kind === \"gifv\" ? \" autoplay loop muted playsinline\" : \" controls\";\n    return \"<!-- wp:video {\\\"id\\\":\" + item.id + attributes + \"} -->\\n\" +\n      \"<figure class=\\\"wp-block-video\\\"><video\" + flags + \" src=\\\"\" + pcEscapeHtml(item.url) +\n      \"\\\"></video></figure>\\n<!-- /wp:video -->\";\n  }\n  if (item.kind === \"audio\") {\n    return \"<!-- wp:audio {\\\"id\\\":\" + item.id + \"} -->\\n\" +\n      \"<figure class=\\\"wp-block-audio\\\"><audio controls src=\\\"\" + pcEscapeHtml(item.url) +\n      \"\\\"></audio></figure>\\n<!-- /wp:audio -->\";\n  }\n  if (item.kind === \"file\") {\n    return \"<!-- wp:paragraph -->\\n<p><a href=\\\"\" + pcEscapeHtml(item.url) +\n      \"\\\">Social media attachment</a></p>\\n<!-- /wp:paragraph -->\";\n  }\n  return \"<!-- wp:image {\\\"id\\\":\" + item.id + \",\\\"sizeSlug\\\":\\\"full\\\",\\\"linkDestination\\\":\\\"none\\\"} -->\\n\" +\n    \"<figure class=\\\"wp-block-image size-full\\\"><img src=\\\"\" + pcEscapeHtml(item.url) + \"\\\" alt=\\\"\" +\n    pcEscapeHtml(item.alt || \"\") + \"\\\" class=\\\"wp-image-\" + item.id + \"\\\"/></figure>\\n<!-- /wp:image -->\";\n}\n\nfunction pcTokenBlock(token, media, job) {\n  var language = pcLanguageAttribute(job);\n  var level;\n  var attributes;\n  var tag;\n  var listAttributes;\n  var listHtml;\n  var i;\n\n  if (token.type === \"paragraph\") {\n    return \"<!-- wp:paragraph -->\\n<p\" + language + \">\" + token.html + \"</p>\\n<!-- /wp:paragraph -->\";\n  }\n  if (token.type === \"heading\") {\n    level = parseInt(token.level, 10) || 2;\n    if (level < 1 || level > 6) { level = 2; }\n    attributes = level === 2 ? \"\" : \" {\\\"level\\\":\" + level + \"}\";\n    return \"<!-- wp:heading\" + attributes + \" -->\\n<h\" + level + \" class=\\\"wp-block-heading\\\"\" + language + \">\" +\n      token.html + \"</h\" + level + \">\\n<!-- /wp:heading -->\";\n  }\n  if (token.type === \"quote\") {\n    return \"<!-- wp:quote -->\\n<blockquote class=\\\"wp-block-quote\\\"><p\" + language + \">\" + token.html +\n      \"</p></blockquote>\\n<!-- /wp:quote -->\";\n  }\n  if (token.type === \"preformatted\") {\n    return \"<!-- wp:preformatted -->\\n<pre class=\\\"wp-block-preformatted\\\"\" + language + \">\" + token.html +\n      \"</pre>\\n<!-- /wp:preformatted -->\";\n  }\n  if (token.type === \"list\") {\n    tag = token.ordered ? \"ol\" : \"ul\";\n    listAttributes = token.ordered ? \" {\\\"ordered\\\":true}\" : \"\";\n    listHtml = \"\";\n    for (i = 0; i < token.items.length; i += 1) { listHtml += \"<li>\" + token.items[i] + \"</li>\"; }\n    return \"<!-- wp:list\" + listAttributes + \" -->\\n<\" + tag + \" class=\\\"wp-block-list\\\"\" + language + \">\" +\n      listHtml + \"</\" + tag + \">\\n<!-- /wp:list -->\";\n  }\n  if (token.type === \"media\" || token.type === \"image\") {\n    return pcMediaBlock(media[String(token.index)]);\n  }\n  return \"\";\n}\n\nfunction pcBuildContent(job, media) {\n  var blocks = [];\n  var i;\n  for (i = 0; i < job.tokens.length; i += 1) {\n    var block = pcTokenBlock(job.tokens[i], media, job);\n    if (block) { blocks.push(block); }\n  }\n  if (job.source_url) {\n    blocks.push(\"<!-- wp:paragraph {\\\"className\\\":\\\"pesos-source\\\"} -->\\n\" +\n      \"<p class=\\\"pesos-source\\\">Source: <a href=\\\"\" + pcEscapeHtml(job.source_url) + \"\\\">Original on \" +\n      pcEscapeHtml(job.source_name || \"social media\") + \"</a></p>\\n<!-- /wp:paragraph -->\");\n  }\n  return blocks.join(\"\\n\\n\");\n}\n\nfunction pcFail(agent, state, message) {\n  if (!state.failed) { agent.error(message); }\n  state.failed = true;\n}\n\nfunction pcMaybeFinish(agent, jobs, jobId) {\n  var state = jobs[jobId];\n  var categoryIds = [];\n  var tagIds = [];\n  var featuredMedia = 0;\n  var termKey;\n  var mediaKey;\n  var post;\n\n  if (!state || state.emitted || state.failed || !state.job) { return; }\n  if (pcCount(state.media) < state.job.media_count) { return; }\n  if (pcCount(state.terms) < state.job.term_count) { return; }\n\n  for (termKey in state.terms) {\n    if (state.terms.hasOwnProperty(termKey)) {\n      if (state.terms[termKey].role === \"category\") { categoryIds.push(state.terms[termKey].id); }\n      if (state.terms[termKey].role === \"tag\") { tagIds[state.terms[termKey].index] = state.terms[termKey].id; }\n    }\n  }\n  for (mediaKey = 0; mediaKey < state.job.tokens.length; mediaKey += 1) {\n    var token = state.job.tokens[mediaKey];\n    var candidate = token && (token.type === \"media\" || token.type === \"image\") ?\n      state.media[String(token.index)] : null;\n    if (candidate && candidate.kind === \"image\") { featuredMedia = candidate.id; break; }\n  }\n  tagIds = tagIds.filter(function(value) { return typeof value !== \"undefined\"; });\n\n  post = {\n    title: state.job.title,\n    slug: state.job.slug,\n    status: state.job.post_status || \"draft\",\n    content: pcBuildContent(state.job, state.media),\n    excerpt: state.job.excerpt || \"\",\n    categories: categoryIds,\n    tags: tagIds,\n    featured_media: featuredMedia,\n    comment_status: \"closed\",\n    ping_status: \"closed\"\n  };\n  if (state.job.wp_date_gmt) { post.date_gmt = state.job.wp_date_gmt; }\n  else if (state.job.wp_date) { post.date = state.job.wp_date; }\n\n  state.emitted = true;\n  agent.createEvent(post);\n  delete jobs[jobId];\n}\n\nAgent.receive = function() {\n  var events = this.incomingEvents();\n  var jobs = this.memory(\"jobs\") || {};\n  var now = new Date().getTime();\n  var cutoff = now - (2 * 24 * 60 * 60 * 1000);\n  var stale;\n  var i;\n\n  for (stale in jobs) {\n    if (jobs.hasOwnProperty(stale) && jobs[stale].updated_at_ms < cutoff) { delete jobs[stale]; }\n  }\n\n  for (i = 0; i < events.length; i += 1) {\n    var event = events[i].payload || {};\n    var job = event.job_data;\n    var jobId = event.job_id || (job && job.job_id);\n    var body;\n    var termId;\n    var termKey;\n    if (!jobId || !job) { continue; }\n    if (!jobs[jobId]) {\n      jobs[jobId] = { job: job, media: {}, terms: {}, emitted: false, failed: false, updated_at_ms: now };\n    }\n    jobs[jobId].updated_at_ms = now;\n\n    if (event.event_type === \"media_request\" && typeof event.status !== \"undefined\") {\n      body = pcBody(event.body);\n      if (parseInt(event.status, 10) === 201 && body.id && body.source_url) {\n        jobs[jobId].media[String(event.media_index)] = {\n          id: parseInt(body.id, 10),\n          url: body.source_url,\n          alt: body.alt_text || event.media_alt || \"\",\n          kind: event.media_kind || body.media_type || \"image\"\n        };\n      } else {\n        pcFail(this, jobs[jobId], \"WordPress media upload failed for \" + jobId + \" item \" + event.media_index +\n          \" (HTTP \" + event.status + \"): \" + pcString(event.body));\n      }\n    }\n\n    if (event.event_type === \"term_request\" && typeof event.status !== \"undefined\") {\n      body = pcBody(event.body);\n      termId = body.id || (body.data && body.data.term_id);\n      if (termId) {\n        termKey = event.term_role + \":\" + event.term_index;\n        jobs[jobId].terms[termKey] = {\n          id: parseInt(termId, 10),\n          role: event.term_role,\n          index: parseInt(event.term_index, 10)\n        };\n      } else {\n        pcFail(this, jobs[jobId], \"WordPress taxonomy request failed for \" + jobId + \" term \" + event.term_name +\n          \" (HTTP \" + event.status + \"): \" + pcString(event.body));\n      }\n    }\n\n    pcMaybeFinish(this, jobs, jobId);\n  }\n  this.memory(\"jobs\", jobs);\n};\n"
+      },
+      "keep_events_for": 604800,
+      "schedule": "never",
+      "propagate_immediately": true
+    },
+    {
+      "type": "Agents::PostAgent",
+      "name": "08 — Create WordPress draft [SET CREDENTIALS]",
+      "disabled": false,
+      "guid": "b42a34c8-e592-5ed7-90a3-e08db92b7bda",
+      "options": {
+        "post_url": "__WORDPRESS_BASE_URL__/wp-json/wp/v2/posts",
+        "expected_receive_period_in_days": "7",
+        "content_type": "json",
+        "method": "post",
+        "headers": {},
+        "payload": {},
+        "basic_auth": [
+          "{% credential __WP_USERNAME_CREDENTIAL__ %}",
+          "{% credential __WP_APPLICATION_PASSWORD_CREDENTIAL__ %}"
+        ],
+        "emit_events": "true",
+        "parse_body": "true",
+        "no_merge": "false",
+        "output_mode": "clean"
+      },
+      "keep_events_for": 604800,
+      "schedule": "never",
+      "propagate_immediately": true
+    }
+  ],
+  "links": [
+    {
+      "source": 0,
+      "receiver": 1
+    },
+    {
+      "source": 1,
+      "receiver": 2
+    },
+    {
+      "source": 1,
+      "receiver": 4
+    },
+    {
+      "source": 1,
+      "receiver": 6
+    },
+    {
+      "source": 2,
+      "receiver": 3
+    },
+    {
+      "source": 3,
+      "receiver": 6
+    },
+    {
+      "source": 4,
+      "receiver": 5
+    },
+    {
+      "source": 5,
+      "receiver": 6
+    },
+    {
+      "source": 6,
+      "receiver": 7
+    }
+  ],
+  "control_links": []
+}

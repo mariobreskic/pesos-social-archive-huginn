@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://archive.example/schemas/pesos-event.schema.json",
+  "title": "Normalized PESOS social post Event",
+  "type": "object",
+  "required": ["source", "source_url", "created_at", "trigger_tag"],
+  "properties": {
+    "source": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable machine name such as bluesky, instagram, mastodon, threads, tumblr, or twitter."
+    },
+    "source_name": {
+      "type": "string",
+      "description": "Human-facing platform name and default WordPress category."
+    },
+    "source_id": {
+      "type": ["string", "number"],
+      "description": "Immutable platform post identifier."
+    },
+    "source_url": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://"
+    },
+    "author": { "type": "string" },
+    "created_at": {
+      "type": "string",
+      "description": "Prefer ISO 8601; the common English IFTTT date form is also accepted."
+    },
+    "title": { "type": "string" },
+    "text": { "type": "string" },
+    "body_text": { "type": "string" },
+    "caption": { "type": "string" },
+    "content_text": { "type": "string" },
+    "body_html": { "type": "string" },
+    "html": { "type": "string" },
+    "tags": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "array", "items": { "type": ["string", "number"] } }
+      ]
+    },
+    "media": {
+      "oneOf": [
+        { "$ref": "#/$defs/media" },
+        { "type": "array", "maxItems": 10, "items": { "$ref": "#/$defs/media" } }
+      ]
+    },
+    "attachments": {
+      "oneOf": [
+        { "$ref": "#/$defs/media" },
+        { "type": "array", "maxItems": 10, "items": { "$ref": "#/$defs/media" } }
+      ]
+    },
+    "media_url": { "type": "string", "format": "uri", "pattern": "^https://" },
+    "media_alt": { "type": "string" },
+    "media_title": { "type": "string" },
+    "media_position": { "enum": ["before", "after"] },
+    "category": { "type": "string" },
+    "language": { "type": "string" },
+    "trigger_tag": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "media": {
+      "oneOf": [
+        { "type": "string", "format": "uri", "pattern": "^https://" },
+        {
+          "type": "object",
+          "required": ["url"],
+          "properties": {
+            "url": { "type": "string", "format": "uri", "pattern": "^https://" },
+            "kind": { "enum": ["image", "photo", "video", "gifv", "animated_gif", "audio", "file"] },
+            "alt": { "type": "string" },
+            "title": { "type": "string" }
+          },
+          "additionalProperties": true
+        }
+      ]
+    }
+  },
+  "additionalProperties": true
+}

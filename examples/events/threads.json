@@ -1,0 +1,11 @@
+{
+  "source": "threads",
+  "source_name": "Threads",
+  "source_id": "EXAMPLETHREAD1",
+  "source_url": "https://www.threads.com/@example/post/EXAMPLETHREAD1",
+  "author": "example",
+  "created_at": "2026-08-30T09:18:00Z",
+  "text": "A watercooler thought, retained without the watercooler. #socialposts #design",
+  "trigger_tag": "socialposts",
+  "language": "en"
+}

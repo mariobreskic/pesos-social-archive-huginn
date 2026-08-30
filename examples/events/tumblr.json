@@ -1,0 +1,14 @@
+{
+  "source": "tumblr",
+  "source_name": "Tumblr",
+  "source_id": "760000000000000001",
+  "source_url": "https://example.tumblr.com/post/760000000000000001/example-post",
+  "author": "example",
+  "created_at": "August 30, 2026 at 9:19 AM",
+  "title": "An authored Tumblr title",
+  "body_text": "A paragraph, an image, and a short list.",
+  "body_html": "<p>A paragraph with <em>inline emphasis</em>.</p><figure><img src=\"https://cdn.example/tumblr-image.jpg\" alt=\"A folded sheet of red paper\"></figure><ul><li>First observation</li><li>Second observation</li></ul>",
+  "tags": ["socialposts", "code and canvas", "typography"],
+  "trigger_tag": "socialposts",
+  "language": "en"
+}
