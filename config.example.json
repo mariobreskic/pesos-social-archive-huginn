@@ -1,0 +1,8 @@
+{
+  "wordpress_base_url": "https://archive.example",
+  "wordpress_username_credential": "pesos_wp_username",
+  "wordpress_application_password_credential": "pesos_wp_application_password",
+  "webhook_secret": "REPLACE_WITH_AT_LEAST_32_RANDOM_URL_SAFE_CHARACTERS",
+  "routing_tag": "socialposts",
+  "post_status": "draft"
+}

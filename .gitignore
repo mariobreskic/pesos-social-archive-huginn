@@ -1,0 +1,8 @@
+/build/
+/config.json
+*.log
+*.swp
+__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db
