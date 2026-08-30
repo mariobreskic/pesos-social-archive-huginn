@@ -125,6 +125,10 @@ Platform mapping notes are in [`docs/ADAPTERS.md`](docs/ADAPTERS.md).
 
 `src/normalize.js` and `src/collect.js` are the readable sources. `tools/build_template.py` embeds them in Huginn’s JSON export format. Run `make template` after changing either file; CI checks JSON structure, graph links, JavaScript syntax when Node is available, placeholders, fixtures, safe defaults, and common leakage patterns.
 
+## Provenance
+
+This template was developed by Mario Breškić in collaboration with ChatGPT by OpenAI. It was generalized from six working Huginn scenarios for Bluesky, Instagram, Mastodon, Threads, Tumblr, and Twitter/X, then sanitized, documented, and validated as a public PESOS foundation.
+
 ## License
 
 MIT. Replace the generic copyright line if you publish a maintained fork under your own name.
